@@ -1,198 +1,156 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Thu Mar 11 01:29:21 2021
+VGG16 feature extraction with Random Forest and XGBoost classifiers.
+Uses CK+48 dataset with train/validation split.
 
 @author: abhishek
 """
 
-import numpy as np 
-import pandas as pd 
+import numpy as np
 import matplotlib.pyplot as plt
 import glob
 import cv2
+import os
 import pickle
 
-from keras.models import Sequential, Model
-from keras.layers import Conv2D
-import os
-from keras.applications.vgg16 import VGG16
 import seaborn as sns
+
+from tensorflow.keras.models import Model, Sequential
+from tensorflow.keras.layers import Dense, Flatten, Conv2D, MaxPooling2D, BatchNormalization
+from tensorflow.keras.applications.vgg16 import VGG16
+from tensorflow.keras.utils import to_categorical
+
+from sklearn import preprocessing, metrics
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import confusion_matrix
 
 
 print(os.listdir("CK+48/data/"))
 
-#Resizing images is optional, CNNs are ok with large images
-SIZE_X = 224 #Resize images (height  = X, width = Y)
-SIZE_Y = 224
+SIZE = 224
 
-#Capture training image info as a list
+# Capture training data and labels
 train_images = []
 train_labels = []
+
 for directory_path in glob.glob("CK+48/data/train/*"):
-    label = directory_path.split("\\")[-1]
-    for img_path in glob.glob(os.path.join(directory_path,  "*.*")):
-        img = cv2.imread(img_path, cv2.IMREAD_COLOR)       
-        img = cv2.resize(img, (SIZE_Y, SIZE_X))
+    label = os.path.basename(directory_path)
+    for img_path in glob.glob(os.path.join(directory_path, "*.*")):
+        img = cv2.imread(img_path, cv2.IMREAD_COLOR)
+        if img is None:
+            continue
+        img = cv2.resize(img, (SIZE, SIZE))
         img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
         train_images.append(img)
         train_labels.append(label)
-#Convert list to array for machine learning processing
+
 train_images = np.array(train_images)
 train_labels = np.array(train_labels)
 
 
-#Capture mask/label info as a list
+# Capture test/validation data and labels
 test_images = []
-test_labels = [] 
+test_labels = []
 for directory_path in glob.glob("CK+48/data/validation/*"):
-    fruit_label = directory_path.split("\\")[-1]
-    for mask_path in glob.glob(os.path.join(directory_path, "*.*")):
+    label = os.path.basename(directory_path)
+    for img_path in glob.glob(os.path.join(directory_path, "*.*")):
         img = cv2.imread(img_path, cv2.IMREAD_COLOR)
-        img = cv2.resize(img, (SIZE_Y, SIZE_X))
+        if img is None:
+            continue
+        img = cv2.resize(img, (SIZE, SIZE))
         img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
         test_images.append(img)
-        test_labels.append(fruit_label)
-#Convert list to array for machine learning processing          
+        test_labels.append(label)
+
 test_images = np.array(test_images)
 test_labels = np.array(test_labels)
 
-
-
-#Use customary x_train and y_train variables
-X_train = train_images
-y_train = train_masks
-y_train = np.expand_dims(y_train, axis=3) #May not be necessary.. leftover from previous code 
-
-
-
-from sklearn import preprocessing
+# Encode labels from text to integers.
 le = preprocessing.LabelEncoder()
-le.fit(test_labels)
-test_labels_encoded = le.transform(test_labels)
-le.fit(train_labels)
+all_labels = np.concatenate([train_labels, test_labels])
+le.fit(all_labels)
 train_labels_encoded = le.transform(train_labels)
+test_labels_encoded = le.transform(test_labels)
 
-#Split data into test and train datasets (already split but assigning to meaningful convention)
-x_train, y_train, x_test, y_test = train_images, train_labels_encoded, test_images, test_labels_encoded
+# Assign to meaningful convention
+x_train, y_train = train_images, train_labels_encoded
+x_test, y_test = test_images, test_labels_encoded
 
-###################################################################
 # Normalize pixel values to between 0 and 1
 x_train, x_test = x_train / 255.0, x_test / 255.0
 
-#One hot encode y values for neural network. 
-from keras.utils import to_categorical
+# One hot encode y values for neural network.
 y_train_one_hot = to_categorical(y_train)
 y_test_one_hot = to_categorical(y_test)
 
+# Load VGG16 for feature extraction only (all layers frozen)
+VGG_model = VGG16(weights='imagenet', include_top=False, input_shape=(SIZE, SIZE, 3))
+VGG_model.summary()
 
-#Load VGG16 model wothout classifier/fully connected layers
-#Load imagenet weights that we are going to use as feature generators
-VGG_model = VGG16(weights='imagenet', include_top=False, input_shape=(SIZE_X, SIZE_Y, 3))
-
-#Make loaded layers as non-trainable. This is important as we want to work with pre-trained weights
 for layer in VGG_model.layers:
-	layer.trainable = False
-    
-VGG_model.summary()  #Trainable parameters will be 0
+    layer.trainable = False
 
-#After the first 2 convolutional layers the image dimension changes. 
-#So for easy comparison to Y (labels) let us only take first 2 conv layers
-#and create a new model to extract features
-#New model with only first 2 conv layers
-#new_model = Model(inputs=VGG_model.input, outputs=VGG_model.get_layer('block1_conv2').output)
-#new_model.summary()
+VGG_model.summary()
 
-#Now, let us apply feature extractor to our training data
-feature_extractor=VGG_model.predict(x_train)
-
+# Extract features using VGG16
+feature_extractor = VGG_model.predict(x_train)
 features = feature_extractor.reshape(feature_extractor.shape[0], -1)
+X_for_training = features
 
+# XGBOOST
+import xgboost as xgb
+xg_model = xgb.XGBClassifier()
+xg_model.fit(X_for_training, y_train)
 
-X_for_RF = features
-from sklearn.ensemble import RandomForestClassifier
-RF_model = RandomForestClassifier(n_estimators = 50, random_state = 42)
-
-# Train the model on training data
-RF_model.fit(X_for_RF, y_train) #For sklearn no one hot encoding
-
-#Send test data through same feature extractor process
+# Extract test features
 X_test_feature = VGG_model.predict(x_test)
 X_test_features = X_test_feature.reshape(X_test_feature.shape[0], -1)
 
-#Now predict using the trained RF model. 
-prediction_RF = RF_model.predict(X_test_features)
-#Inverse le transform to get original label back. 
+# Predict using XGBoost
+prediction = xg_model.predict(X_test_features)
+prediction = le.inverse_transform(prediction)
+
+# RANDOM FOREST
+rf_model = RandomForestClassifier(n_estimators=50, random_state=42)
+rf_model.fit(X_for_training, y_train)
+
+# Predict using RF
+prediction_RF = rf_model.predict(X_test_features)
 prediction_RF = le.inverse_transform(prediction_RF)
 
-#Print overall accuracy
-from sklearn import metrics
-print ("Accuracy = ", metrics.accuracy_score(test_labels, prediction_RF))
+# Save models
+xg_filename = 'model_XG.sav'
+pickle.dump(xg_model, open(xg_filename, 'wb'))
+rf_filename = 'RF_model.sav'
+pickle.dump(rf_model, open(rf_filename, 'wb'))
 
-#Confusion Matrix - verify accuracy of each class
-from sklearn.metrics import confusion_matrix
+# Print overall accuracy
+print("XGBoost Accuracy = ", metrics.accuracy_score(test_labels, prediction))
+print("RF Accuracy = ", metrics.accuracy_score(test_labels, prediction_RF))
 
-cm = confusion_matrix(test_labels, prediction_RF)
-#print(cm)
+# Confusion Matrix
+cm = confusion_matrix(test_labels, prediction)
+cm2 = confusion_matrix(test_labels, prediction_RF)
+
+plt.figure()
 sns.heatmap(cm, annot=True)
-
-#Check results on a few select images
-n=np.random.randint(0, x_test.shape[0])
-img = x_test[n]
-plt.imshow(img)
-input_img = np.expand_dims(img, axis=0) #Expand dims so the input is (num images, x, y, c)
-input_img_feature=VGG_model.predict(input_img)
-input_img_features=input_img_feature.reshape(input_img_feature.shape[0], -1)
-prediction_RF = RF_model.predict(input_img_features)[0] 
-prediction_RF = le.inverse_transform([prediction_RF])  #Reverse the label encoder to original name
-print("The prediction for this image is: ", prediction_RF)
-print("The actual label for this image is: ", test_labels[n])
-
-
-#Plot features to view them
-square = 8
-ix=1
-for _ in range(square):
-    for _ in range(square):
-        ax = plt.subplot(square, square, ix)
-        ax.set_xticks([])
-        ax.set_yticks([])
-        plt.imshow(features[0,:,:,ix-1], cmap='gray')
-        ix +=1
+plt.title("XGBoost Confusion Matrix")
 plt.show()
 
-#Reassign 'features' as X to make it easy to follow
-X=features
-X = X.reshape(-1, X.shape[3])  #Make it compatible for Random Forest and match Y labels
+plt.figure()
+sns.heatmap(cm2, annot=True)
+plt.title("Random Forest Confusion Matrix")
+plt.show()
 
-#Reshape Y to match X
-Y = y_train.reshape(-1)
-
-#Combine X and Y into a dataframe to make it easy to drop all rows with Y values 0
-#In our labels Y values 0 = unlabeled pixels. 
-dataset = pd.DataFrame(X)
-dataset['Label'] = Y
-print(dataset['Label'].unique())
-print(dataset['Label'].value_counts())
-
-##If we do not want to include pixels with value 0 
-##e.g. Sometimes unlabeled pixels may be given a value 0.
-dataset = dataset[dataset['Label'] != 0]
-
-#Redefine X and Y for Random Forest
-X_for_RF = dataset.drop(labels = ['Label'], axis=1)
-Y_for_RF = dataset['Label']
-
-#RANDOM FOREST
-from sklearn.ensemble import RandomForestClassifier
-model = RandomForestClassifier(n_estimators = 50, random_state = 42)
-
-# Train the model on training data
-model.fit(X_for_RF, Y_for_RF) 
-
-#Save model for future use
-filename = 'RF_model.sav'
-pickle.dump(model, open(filename, 'wb'))
-
-#Load model.... 
-loaded_model = pickle.load(open(filename, 'rb'))
+# Check results on a few select images
+n = np.random.randint(0, x_test.shape[0])
+img = x_test[n]
+plt.imshow(img)
+input_img = np.expand_dims(img, axis=0)
+input_img_feature = VGG_model.predict(input_img)
+input_img_features = input_img_feature.reshape(input_img_feature.shape[0], -1)
+prediction_sample = xg_model.predict(input_img_features)[0]
+prediction_sample = le.inverse_transform([prediction_sample])
+print("The prediction for this image is: ", prediction_sample)
+print("The actual label for this image is: ", test_labels[n])
