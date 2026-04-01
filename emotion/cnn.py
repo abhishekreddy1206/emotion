@@ -27,6 +27,8 @@ from tensorflow.keras.layers import Dropout, BatchNormalization
 from tensorflow.keras.callbacks import Callback, EarlyStopping, ReduceLROnPlateau
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.utils import plot_model, to_categorical
+from tensorflow.keras.regularizers import l2
+from sklearn.utils.class_weight import compute_class_weight
 
 np.random.seed(42)
 
@@ -66,7 +68,8 @@ def build_cnn(input_shape, num_classes, show_summary=True):
 
     flatten = Flatten(name='flatten')(dropout_3)
 
-    dense_1 = Dense(256, activation='elu', kernel_initializer='he_normal', name='dense1')(flatten)
+    dense_1 = Dense(256, activation='elu', kernel_initializer='he_normal',
+                     kernel_regularizer=l2(1e-4), name='dense1')(flatten)
     batchnorm_7 = BatchNormalization(name='batchnorm_7')(dense_1)
     dropout_4 = Dropout(0.6, name='dropout_4')(batchnorm_7)
 
@@ -116,8 +119,8 @@ for dir_ in os.listdir(DATA_PATH):
                 img_arr[i] = np.expand_dims(cv2.imread(DATA_PATH + dir_ + "/" + f, 0), axis=2)
                 img_label[i] = label
                 i += 1
-            except:
-                pass
+            except (cv2.error, ValueError, OSError) as e:
+                print(f"Warning: skipping {f}: {e}")
 
         print(f"loaded {dir_} images to numpy arrays...")
         label += 1
@@ -225,12 +228,17 @@ model.compile(
 
 
 BEST_CONFIG["train_datagen"].fit(X_train)
+y_train_int = np.argmax(y_train, axis=1)
+class_weights_arr = compute_class_weight('balanced', classes=np.unique(y_train_int), y=y_train_int)
+cnn_class_weights = dict(enumerate(class_weights_arr))
+
 history = model.fit(
     BEST_CONFIG["train_datagen"].flow(X_train, y_train, batch_size=BEST_CONFIG["batch_size"]),
     validation_data=(X_test, y_test),
     steps_per_epoch=len(X_train) / BEST_CONFIG["batch_size"],
     epochs=BEST_CONFIG["epochs"],
     callbacks=BEST_CONFIG["callbacks"],
+    class_weight=cnn_class_weights,
 )
 
 

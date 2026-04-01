@@ -34,6 +34,9 @@ from tensorflow.keras.callbacks import Callback, EarlyStopping, ReduceLROnPlatea
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.utils import plot_model, to_categorical
 from tensorflow.keras.applications import VGG19, ResNet50
+from tensorflow.keras.regularizers import l2
+from tensorflow.keras.layers import GlobalAveragePooling2D
+from sklearn.utils.class_weight import compute_class_weight
 
 import xgboost as xgb
 
@@ -106,7 +109,7 @@ for i, imgs in enumerate(images):
 train_images = []
 val_images = []
 for imgs in resized_images:
-    train, test = train_test_split(imgs, train_size=0.7, test_size=0.3)
+    train, test = train_test_split(imgs, train_size=0.7, test_size=0.3, random_state=42)
     train_images.append(train)
     val_images.append(test)
 
@@ -165,14 +168,6 @@ np.random.shuffle(val_labels)
 np.random.seed(seed)
 np.random.shuffle(val_categories)
 
-num_train = min(3400, len(train_data))
-num_val = min(860, len(val_data))
-train_data = train_data[:num_train]
-train_labels = train_labels[:num_train]
-train_categories = train_categories[:num_train]
-val_data = val_data[:num_val]
-val_labels = val_labels[:num_val]
-val_categories = val_categories[:num_val]
 print('shape of train data:', train_data.shape)
 print('shape of train labels:', train_labels.shape)
 print('shape of val data:', val_data.shape)
@@ -267,9 +262,9 @@ def create_model_from_scratch():
     model.add(MaxPooling2D(pool_size=(2, 2), name='maxpool_3'))
 
     model.add(Flatten())
-    model.add(Dense(512, activation='relu', name='dense_1'))
+    model.add(Dense(512, activation='relu', kernel_regularizer=l2(1e-4), name='dense_1'))
     model.add(Dropout(0.5))
-    model.add(Dense(128, activation='relu', name='dense_2'))
+    model.add(Dense(128, activation='relu', kernel_regularizer=l2(1e-4), name='dense_2'))
     model.add(Dense(len(categories), name='output'))
     model.add(Activation('softmax'))
 
@@ -313,7 +308,8 @@ def build_cnn(input_shape, num_classes, show_summary=True):
 
     flatten = Flatten(name='flatten')(dropout_3)
 
-    dense_1 = Dense(256, activation='elu', kernel_initializer='he_normal', name='dense1')(flatten)
+    dense_1 = Dense(256, activation='elu', kernel_initializer='he_normal',
+                     kernel_regularizer=l2(1e-4), name='dense1')(flatten)
     batchnorm_7 = BatchNormalization(name='batchnorm_7')(dense_1)
     dropout_4 = Dropout(0.6, name='dropout_4')(batchnorm_7)
 
@@ -336,9 +332,9 @@ def create_model_from_VGG19():
 
     x = base_model.output
     x = Flatten()(x)
-    x = Dense(1024, activation="relu")(x)
+    x = Dense(1024, activation="relu", kernel_regularizer=l2(1e-4))(x)
     x = Dropout(0.5)(x)
-    x = Dense(1024, activation="relu")(x)
+    x = Dense(1024, activation="relu", kernel_regularizer=l2(1e-4))(x)
     predictions = Dense(len(categories), activation="softmax")(x)
 
     final_model = Model(inputs=base_model.input, outputs=predictions)
@@ -352,9 +348,9 @@ def create_model_from_ResNet50():
     model.add(ResNet50(include_top=False, pooling='avg', weights='imagenet'))
     model.add(Flatten())
     model.add(BatchNormalization())
-    model.add(Dense(2048, activation='relu'))
+    model.add(Dense(2048, activation='relu', kernel_regularizer=l2(1e-4)))
     model.add(BatchNormalization())
-    model.add(Dense(1024, activation='relu'))
+    model.add(Dense(1024, activation='relu', kernel_regularizer=l2(1e-4)))
     model.add(BatchNormalization())
     model.add(Dense(len(categories), activation='softmax'))
     model.layers[0].trainable = False
@@ -421,12 +417,23 @@ start = time.time()
 
 xgb_model = xgb.XGBClassifier()
 
+# Compute class weights for balanced training
+class_weights_arr = compute_class_weight('balanced', classes=np.unique(train_categories), y=train_categories)
+class_weight_dict = dict(enumerate(class_weights_arr))
+
+transfer_callbacks = [
+    EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True, verbose=1),
+    ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-7, verbose=1),
+]
+
 model_VGG19_info = model_VGG19.fit(
     train_generator,
     steps_per_epoch=len(train_data) // batch_size,
     epochs=epochs2,
     validation_steps=len(val_data) // batch_size,
     validation_data=val_generator,
+    class_weight=class_weight_dict,
+    callbacks=transfer_callbacks,
     verbose=2
 )
 
@@ -440,6 +447,8 @@ model_VGG19_info_canny = model_VGG19.fit(
     epochs=epochs2,
     validation_steps=len(val_data) // batch_size,
     validation_data=val_generator,
+    class_weight=class_weight_dict,
+    callbacks=transfer_callbacks,
     verbose=2
 )
 
@@ -452,6 +461,8 @@ model_ResNet50_info = model_ResNet50.fit(
     epochs=epochs3,
     validation_steps=len(val_data) // batch_size,
     validation_data=val_generator,
+    class_weight=class_weight_dict,
+    callbacks=transfer_callbacks,
     verbose=2
 )
 
@@ -465,6 +476,8 @@ model_ResNet50_canny_info = model_ResNet50.fit(
     epochs=epochs3,
     validation_steps=len(val_data) // batch_size,
     validation_data=val_generator,
+    class_weight=class_weight_dict,
+    callbacks=transfer_callbacks,
     verbose=2
 )
 
@@ -563,8 +576,8 @@ for dir_ in os.listdir(base_path):
                 img_arr[i] = np.expand_dims(cv2.imread(base_path + dir_ + "/" + f, 0), axis=2)
                 img_label[i] = label
                 i += 1
-            except:
-                pass
+            except (cv2.error, ValueError, OSError) as e:
+                print(f"Warning: skipping {f}: {e}")
 
         print(f"loaded {dir_} images to numpy arrays...")
         label += 1
@@ -669,12 +682,17 @@ cnn_model.compile(
 )
 
 BEST_CONFIG["train_datagen"].fit(X_train)
+y_train_int_cnn = np.argmax(y_train, axis=1)
+cnn_class_weights_arr = compute_class_weight('balanced', classes=np.unique(y_train_int_cnn), y=y_train_int_cnn)
+cnn_class_weight_dict = dict(enumerate(cnn_class_weights_arr))
+
 history = cnn_model.fit(
     BEST_CONFIG["train_datagen"].flow(X_train, y_train, batch_size=BEST_CONFIG["batch_size"]),
     validation_data=(X_test, y_test),
     steps_per_epoch=len(X_train) / BEST_CONFIG["batch_size"],
     epochs=BEST_CONFIG["epochs"],
     callbacks=BEST_CONFIG["callbacks"],
+    class_weight=cnn_class_weight_dict,
 )
 
 # XGBoost on CNN features

@@ -17,13 +17,14 @@ import pickle
 import seaborn as sns
 
 from tensorflow.keras.models import Model, Sequential
-from tensorflow.keras.layers import Dense, Flatten, Conv2D, MaxPooling2D, BatchNormalization
+from tensorflow.keras.layers import Dense, Flatten, Conv2D, MaxPooling2D, BatchNormalization, GlobalAveragePooling2D
 from tensorflow.keras.applications.vgg16 import VGG16
 from tensorflow.keras.utils import to_categorical
 
 from sklearn import preprocessing, metrics
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import confusion_matrix
+from sklearn.model_selection import StratifiedKFold, cross_val_score
 
 
 print(os.listdir("CK+48/data/"))
@@ -84,28 +85,24 @@ x_train, x_test = x_train / 255.0, x_test / 255.0
 y_train_one_hot = to_categorical(y_train)
 y_test_one_hot = to_categorical(y_test)
 
-# Load VGG16 for feature extraction only (all layers frozen)
-VGG_model = VGG16(weights='imagenet', include_top=False, input_shape=(SIZE, SIZE, 3))
-VGG_model.summary()
-
-for layer in VGG_model.layers:
+# Load VGG16 for feature extraction with GlobalAveragePooling2D (512 dims vs 25,088)
+base_model = VGG16(weights='imagenet', include_top=False, input_shape=(SIZE, SIZE, 3))
+for layer in base_model.layers:
     layer.trainable = False
-
+x = GlobalAveragePooling2D()(base_model.output)
+VGG_model = Model(inputs=base_model.input, outputs=x)
 VGG_model.summary()
 
-# Extract features using VGG16
-feature_extractor = VGG_model.predict(x_train)
-features = feature_extractor.reshape(feature_extractor.shape[0], -1)
-X_for_training = features
+# Extract features using VGG16 (now 512-dim vectors)
+X_for_training = VGG_model.predict(x_train)
 
 # XGBOOST
 import xgboost as xgb
 xg_model = xgb.XGBClassifier()
 xg_model.fit(X_for_training, y_train)
 
-# Extract test features
-X_test_feature = VGG_model.predict(x_test)
-X_test_features = X_test_feature.reshape(X_test_feature.shape[0], -1)
+# Extract test features (already 512-dim from GlobalAveragePooling2D)
+X_test_features = VGG_model.predict(x_test)
 
 # Predict using XGBoost
 prediction = xg_model.predict(X_test_features)
@@ -129,6 +126,15 @@ pickle.dump(rf_model, open(rf_filename, 'wb'))
 print("XGBoost Accuracy = ", metrics.accuracy_score(test_labels, prediction))
 print("RF Accuracy = ", metrics.accuracy_score(test_labels, prediction_RF))
 
+# Cross-validation scores
+all_features = np.vstack([X_for_training, X_test_features])
+all_labels_encoded = np.concatenate([y_train, y_test])
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+xgb_cv_scores = cross_val_score(xgb.XGBClassifier(), all_features, all_labels_encoded, cv=cv, scoring='accuracy')
+rf_cv_scores = cross_val_score(RandomForestClassifier(n_estimators=50, random_state=42), all_features, all_labels_encoded, cv=cv, scoring='accuracy')
+print(f"XGBoost 5-fold CV: {xgb_cv_scores.mean():.4f} +/- {xgb_cv_scores.std():.4f}")
+print(f"RF 5-fold CV: {rf_cv_scores.mean():.4f} +/- {rf_cv_scores.std():.4f}")
+
 # Confusion Matrix
 cm = confusion_matrix(test_labels, prediction)
 cm2 = confusion_matrix(test_labels, prediction_RF)
@@ -148,8 +154,7 @@ n = np.random.randint(0, x_test.shape[0])
 img = x_test[n]
 plt.imshow(img)
 input_img = np.expand_dims(img, axis=0)
-input_img_feature = VGG_model.predict(input_img)
-input_img_features = input_img_feature.reshape(input_img_feature.shape[0], -1)
+input_img_features = VGG_model.predict(input_img)
 prediction_sample = xg_model.predict(input_img_features)[0]
 prediction_sample = le.inverse_transform([prediction_sample])
 print("The prediction for this image is: ", prediction_sample)

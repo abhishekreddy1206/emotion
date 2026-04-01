@@ -24,6 +24,9 @@ from tensorflow.keras.layers import Conv2D, MaxPooling2D
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.utils import to_categorical
 from tensorflow.keras.applications import VGG19, ResNet50
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+from tensorflow.keras.regularizers import l2
+from sklearn.utils.class_weight import compute_class_weight
 from skimage.color import rgb2gray, gray2rgb
 import skimage.io, skimage, skimage.feature
 
@@ -99,7 +102,7 @@ for i, imgs in enumerate(images):
 train_images = []
 val_images = []
 for imgs in resized_images:
-    train, test = train_test_split(imgs, train_size=0.7, test_size=0.3)
+    train, test = train_test_split(imgs, train_size=0.7, test_size=0.3, random_state=42)
     train_images.append(train)
     val_images.append(test)
 
@@ -160,13 +163,6 @@ np.random.shuffle(val_labels)
 np.random.seed(seed)
 np.random.shuffle(val_categories)
 
-num_train = min(3400, len(train_data))
-num_val = min(860, len(val_data))
-train_data = train_data[:num_train]
-train_labels = train_labels[:num_train]
-val_data = val_data[:num_val]
-val_labels = val_labels[:num_val]
-val_categories = val_categories[:num_val]
 print('shape of train data:', train_data.shape)
 print('shape of train labels:', train_labels.shape)
 print('shape of val data:', val_data.shape)
@@ -238,9 +234,9 @@ def create_model_from_scratch():
     model.add(MaxPooling2D(pool_size=(2, 2), name='maxpool_3'))
 
     model.add(Flatten())
-    model.add(Dense(512, activation='relu', name='dense_1'))
+    model.add(Dense(512, activation='relu', kernel_regularizer=l2(1e-4), name='dense_1'))
     model.add(Dropout(0.5))
-    model.add(Dense(128, activation='relu', name='dense_2'))
+    model.add(Dense(128, activation='relu', kernel_regularizer=l2(1e-4), name='dense_2'))
     model.add(Dense(len(categories), name='output'))
     model.add(Activation('softmax'))
 
@@ -257,9 +253,9 @@ def create_model_from_VGG19():
 
     x = base_model.output
     x = Flatten()(x)
-    x = Dense(1024, activation="relu")(x)
+    x = Dense(1024, activation="relu", kernel_regularizer=l2(1e-4))(x)
     x = Dropout(0.5)(x)
-    x = Dense(1024, activation="relu")(x)
+    x = Dense(1024, activation="relu", kernel_regularizer=l2(1e-4))(x)
     predictions = Dense(len(categories), activation="softmax")(x)
 
     final_model = Model(inputs=base_model.input, outputs=predictions)
@@ -273,9 +269,9 @@ def create_model_from_ResNet50():
     model.add(ResNet50(include_top=False, pooling='avg', weights='imagenet'))
     model.add(Flatten())
     model.add(BatchNormalization())
-    model.add(Dense(2048, activation='relu'))
+    model.add(Dense(2048, activation='relu', kernel_regularizer=l2(1e-4)))
     model.add(BatchNormalization())
-    model.add(Dense(1024, activation='relu'))
+    model.add(Dense(1024, activation='relu', kernel_regularizer=l2(1e-4)))
     model.add(BatchNormalization())
     model.add(Dense(len(categories), activation='softmax'))
     model.layers[0].trainable = False
@@ -336,10 +332,14 @@ val_generator = val_datagen.flow(
 
 start = time.time()
 
-end = time.time()
-duration = end - start
-print('\n model_scratch took %0.2f seconds (%0.1f minutes) to train for %d epochs' % (duration, duration / 60, epochs1))
+# Compute class weights for balanced training
+class_weights_arr = compute_class_weight('balanced', classes=np.unique(val_categories), y=val_categories)
+class_weight_dict = dict(enumerate(class_weights_arr))
 
+transfer_callbacks = [
+    EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True, verbose=1),
+    ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-7, verbose=1),
+]
 
 model_VGG19_info = model_VGG19.fit(
     train_generator,
@@ -347,6 +347,8 @@ model_VGG19_info = model_VGG19.fit(
     epochs=epochs2,
     validation_steps=len(val_data) // batch_size,
     validation_data=val_generator,
+    class_weight=class_weight_dict,
+    callbacks=transfer_callbacks,
     verbose=2
 )
 
@@ -356,6 +358,8 @@ model_VGG19_info_canny = model_VGG19.fit(
     epochs=epochs2,
     validation_steps=len(val_data) // batch_size,
     validation_data=val_generator,
+    class_weight=class_weight_dict,
+    callbacks=transfer_callbacks,
     verbose=2
 )
 
@@ -365,6 +369,8 @@ model_ResNet50_info = model_ResNet50.fit(
     epochs=epochs3,
     validation_steps=len(val_data) // batch_size,
     validation_data=val_generator,
+    class_weight=class_weight_dict,
+    callbacks=transfer_callbacks,
     verbose=2
 )
 
@@ -374,6 +380,8 @@ model_ResNet50_canny_info = model_ResNet50.fit(
     epochs=epochs3,
     validation_steps=len(val_data) // batch_size,
     validation_data=val_generator,
+    class_weight=class_weight_dict,
+    callbacks=transfer_callbacks,
     verbose=2
 )
 

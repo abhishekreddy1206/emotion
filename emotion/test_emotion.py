@@ -50,8 +50,8 @@ for dir_ in os.listdir(base_path):
                 img_arr[i] = np.expand_dims(cv2.imread(base_path + dir_ + "/" + f, 0), axis=2)
                 img_label[i] = label
                 i += 1
-            except:
-                pass
+            except (cv2.error, ValueError, OSError) as e:
+                print(f"Warning: skipping {f}: {e}")
 
         print(f"loaded {dir_} images to numpy arrays...")
         label += 1

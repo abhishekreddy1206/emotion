@@ -11,9 +11,10 @@ import numpy as np
 from matplotlib import pyplot as plt
 from tensorflow.keras.preprocessing.image import ImageDataGenerator, load_img, img_to_array
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Conv2D, MaxPool2D, Flatten
+from tensorflow.keras.layers import Dense, Conv2D, MaxPool2D, Flatten, Dropout
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
+from tensorflow.keras.regularizers import l2
 
 
 data_dir = 'data/'
@@ -21,7 +22,8 @@ data_dir = 'data/'
 print(os.listdir("data/"))
 
 # Image augmentation techniques using ImageDataGenerator
-data_gen = ImageDataGenerator(rotation_range=15,
+data_gen = ImageDataGenerator(rescale=1./255,
+                              rotation_range=15,
                               width_shift_range=.2,
                               height_shift_range=.2,
                               brightness_range=[0.8, 1.2],
@@ -68,8 +70,10 @@ model.add(Conv2D(filters=512, kernel_size=(3, 3), padding="same", activation="re
 model.add(MaxPool2D(pool_size=(2, 2), strides=(2, 2)))
 
 model.add(Flatten())
-model.add(Dense(units=4096, activation="relu"))
-model.add(Dense(units=2048, activation="relu"))
+model.add(Dense(units=4096, activation="relu", kernel_regularizer=l2(1e-4)))
+model.add(Dropout(0.5))
+model.add(Dense(units=2048, activation="relu", kernel_regularizer=l2(1e-4)))
+model.add(Dropout(0.5))
 model.add(Dense(units=6, activation="softmax"))
 
 model.compile(optimizer=Adam(learning_rate=0.0001), loss='categorical_crossentropy', metrics=['accuracy'])
@@ -81,9 +85,10 @@ check_point = ModelCheckpoint("emotion_detection_custom_arch1.h5", monitor='val_
                               mode='auto', save_freq='epoch')
 
 early_stopping = EarlyStopping(monitor='val_accuracy', min_delta=0, patience=10, verbose=1, mode='auto')
+lr_scheduler = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-7, verbose=1)
 
 fitting_op = model.fit(data_train, steps_per_epoch=100, validation_data=data_test,
-                       validation_steps=10, epochs=100, callbacks=[check_point, early_stopping])
+                       validation_steps=10, epochs=100, callbacks=[check_point, early_stopping, lr_scheduler])
 
 plt.plot(fitting_op.history["accuracy"])
 plt.plot(fitting_op.history["val_accuracy"])

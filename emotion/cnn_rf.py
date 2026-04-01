@@ -18,10 +18,13 @@ import seaborn as sns
 from tensorflow.keras.models import Model, Sequential
 from tensorflow.keras.layers import Dense, Flatten, Conv2D, MaxPooling2D, BatchNormalization
 from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+from tensorflow.keras.regularizers import l2
 
 from sklearn import preprocessing, metrics
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import confusion_matrix
+from sklearn.model_selection import StratifiedKFold, cross_val_score
 
 
 print(os.listdir("CK+48/data/"))
@@ -107,7 +110,7 @@ feature_extractor.add(Flatten())
 
 # Add layers for deep learning prediction
 x = feature_extractor.output
-x = Dense(128, activation=activation, kernel_initializer='he_uniform')(x)
+x = Dense(128, activation=activation, kernel_initializer='he_uniform', kernel_regularizer=l2(1e-4))(x)
 prediction_layer = Dense(num_classes, activation='softmax')(x)
 
 # Make a new model combining both feature extractor and x
@@ -116,7 +119,12 @@ cnn_model.compile(optimizer='rmsprop', loss='categorical_crossentropy', metrics=
 print(cnn_model.summary())
 
 # Train the CNN model
-history = cnn_model.fit(x_train, y_train_one_hot, epochs=50, validation_data=(x_test, y_test_one_hot))
+cnn_callbacks = [
+    EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True, verbose=1),
+    ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-7, verbose=1),
+]
+history = cnn_model.fit(x_train, y_train_one_hot, epochs=50, validation_data=(x_test, y_test_one_hot),
+                        callbacks=cnn_callbacks)
 
 
 # plot the training and validation accuracy and loss at each epoch
@@ -177,6 +185,13 @@ prediction_RF = le.inverse_transform(prediction_RF)
 
 # Print overall accuracy
 print("Accuracy = ", metrics.accuracy_score(test_labels, prediction_RF))
+
+# Cross-validation scores
+all_features_cv = np.vstack([X_for_RF, X_test_feature])
+all_labels_cv = np.concatenate([y_train, y_test])
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+rf_cv_scores = cross_val_score(RandomForestClassifier(n_estimators=50, random_state=42), all_features_cv, all_labels_cv, cv=cv, scoring='accuracy')
+print(f"RF 5-fold CV: {rf_cv_scores.mean():.4f} +/- {rf_cv_scores.std():.4f}")
 
 # Confusion Matrix - verify accuracy of each class
 cm = confusion_matrix(test_labels, prediction_RF)

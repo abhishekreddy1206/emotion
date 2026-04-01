@@ -11,9 +11,10 @@ import numpy as np
 from matplotlib import pyplot
 from tensorflow.keras.preprocessing.image import ImageDataGenerator, load_img, img_to_array
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Conv2D, MaxPool2D, Flatten
+from tensorflow.keras.layers import Dense, Conv2D, MaxPool2D, Flatten, Dropout
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
+from tensorflow.keras.regularizers import l2
 import skimage.io, skimage, skimage.feature
 from skimage.color import rgb2gray, gray2rgb
 
@@ -54,7 +55,8 @@ def custom_img_prep(img):
 
 
 def data_gen(data_dir):
-    datagen = ImageDataGenerator(rotation_range=15,
+    datagen = ImageDataGenerator(rescale=1./255,
+                                 rotation_range=15,
                                  width_shift_range=.2,
                                  height_shift_range=.2,
                                  brightness_range=[0.8, 1.2],
@@ -105,8 +107,10 @@ def get_model(num_classes=5):
     model.add(MaxPool2D(pool_size=(2, 2), strides=(2, 2)))
 
     model.add(Flatten())
-    model.add(Dense(units=4096, activation="relu"))
-    model.add(Dense(units=2048, activation="relu"))
+    model.add(Dense(units=4096, activation="relu", kernel_regularizer=l2(1e-4)))
+    model.add(Dropout(0.5))
+    model.add(Dense(units=2048, activation="relu", kernel_regularizer=l2(1e-4)))
+    model.add(Dropout(0.5))
     model.add(Dense(units=num_classes, activation="softmax"))
 
     model.compile(optimizer=Adam(learning_rate=0.001), loss='categorical_crossentropy', metrics=['accuracy'])
@@ -121,9 +125,10 @@ def train_model(model, data_train, data_test):
                                   mode='auto', save_freq='epoch')
 
     early_stopping = EarlyStopping(monitor='val_accuracy', min_delta=0, patience=10, verbose=1, mode='auto')
+    lr_scheduler = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-7, verbose=1)
 
     fitting_op = model.fit(data_train, steps_per_epoch=50, validation_data=data_test,
-                           validation_steps=10, epochs=100, callbacks=[check_point, early_stopping])
+                           validation_steps=10, epochs=100, callbacks=[check_point, early_stopping, lr_scheduler])
 
     return fitting_op
 
